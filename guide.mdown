@@ -1,0 +1,431 @@
+# Ubuntu server
+The following guide expects that you have a clean install of ubuntu server.
+
+After this guide you should be able to have a system running:
+
+ - XFS as file system on your storage drives
+ - Snapraid for backup
+ - MHDDFS for storage pool
+ - SSH
+ - Smartmontools for SMART analysis of your hard drives
+ - Plex Media Server for sharing and viewing your media files
+ - MySQL and apache
+ - Sabnzbd for downloading NZB files
+ - Couchpotato to find movies
+ - Nzbdrone to find tv series
+ - Webmin as administrative tool in the browser
+ - NFS for LAN storage sharing
+
+
+
+## XFS
+### Install XFS
+To read more about XFS [click here](https://wiki.ubuntu.com/XFS)
+```
+sudo apt-get install xfsprogs
+sudo apt-get install xfsdump
+```
+
+### Format drive to XFS
+Coming...
+
+## Snapraid
+### Update and download
+```
+sudo apt-get update
+sudo apt-get install gcc
+sudo mkdir /var/lib/snapraid
+sudo chmod a+w /var/lib/snapraid
+cd /var/lib/snapraid
+```
+Download Snapraid (current 7.1) - [Check latest version](http://snapraid.sourceforge.net/download.html)
+```
+wget http://sourceforge.net/projects/snapraid/files/snapraid-7.1.tar.gz
+```
+### Unpack
+```
+tar -xzf snapraid-7.1.tar.gz
+cd snapraid-7.1
+```
+### Make snapraid
+```
+./configure
+configure: creating ./config.status
+config.status: creating Makefile
+config.status: creating config.h
+```
+```
+make
+make check
+sudo make install
+```
+> If need to install run `sudo apt-get install make`
+
+Remove download
+```
+rm /var/lib/snapraid/snapraid-7.1.tar.gz
+```
+
+### Configure snapraid
+```
+sudo cp /var/lib/snapraid/snapraid-7.1/snapraid.conf.example /etc/snapraid.conf
+sudo nano /etc/snapraid.conf
+```
+Set config ([View manual](http://snapraid.sourceforge.net/manual.html))
+```
+parity /media/ST4000VN_2/SNAPRaid_Parity
+
+content /var/snapraid/content
+
+content /media/HD203WI/content
+content /media/HD204UI_1/content
+content /media/WD2000FYPS/content
+
+disk d1 /media/HD203WI/
+disk d2 /media/HD204UI/
+disk d3 /media/ST4000VN_1/
+disk d4 /media/WD2000FYPS/
+disk d5 /media/WD10EADS/
+disk d6 /media/WD40EFRX/
+
+block_size 256
+```
+From the above the parity information will be stored in the /media/ST4000VN_2/SNAPRaid_Parity folder.
+
+SnapRAID is creating a "content" file on a few of my disks. The recommendation is to have at least one copy for each parity file plus one more (So in this case at least 2 disks have to store a "content" file for the parity disk). Although the SnapRAID manual states that it store the content file on the same disk as the parity file itself, it is not a good idea to do so, since it can lead to problems when your drives are nearly full. For reference, the "content" files are around 1GB in size.
+
+For information, the "content" file is created automatically by SnapRAID so the user running SnapRAID needs to have permission to create the file in that location. The same goes for the Parity file.
+
+### Setup sync and scrub script
+#### Sync
+```
+#! /bin/bash
+
+function mailuser () {
+    mailto=$1
+    mailsubject=$2
+    mailbody=$3
+    /bin/cat <<EOF | /usr/sbin/ssmtp $mailto
+To: $mailto
+Subject: $mailsubject
+
+$([[ -f "$mailbody" ]] && tail -7 "$mailbody" || echo "$mailbody")
+
+EOF
+
+}
+
+DEL_THRESHOLD=250
+SNAPRAID_BIN="/usr/local/bin/snapraid"
+
+mailto=user@user.org
+
+output_folder=/tmp
+diff_output="$output_folder/snapraid.diff"
+sync_output="$output_folder/snapraid.sync"
+
+$SNAPRAID_BIN diff 2>&1 > "$diff_output"
+diffreturn=$?
+
+if [[ $diffreturn -ne 0 ]]; then
+    mailsubject="Snapraid diff failed, $diffreturn"
+    mailuser "$mailto" "$mailsubject" "$diff_output"
+    exit 1
+fi
+
+changedcount=$(awk '/^ +[0-9]+ +changed$/ {print $1}' "$diff_output")
+deletedcount=$(awk '/^ +[0-9]+ +removed$/ {print $1}' "$diff_output")
+addedcount=$(awk '/^ +[0-9]+ +added$/ {print $1}' "$diff_output")
+movedcount=$(awk '/^ +[0-9]+ +moved$/ {print $1}' "$diff_output")
+modificationcount=$((changedcount + deletedcount + addedcount + movedcount))
+
+if [[ $modificationcount -gt 0 ]]; then
+  if [[ $deletedcount -gt $DEL_THRESHOLD ]]; then
+    mailsubject="Delete threshold exceeded, $deletedcount deleted files"
+    mailuser "$mailto" "$mailsubject" "$diff_output"
+    exit 1
+  else
+    $SNAPRAID_BIN sync 2>&1 > "$sync_output"
+    syncreturn=$?
+    if [[ $syncreturn -ne 0 ]]; then
+        mailsubject="Snapraid sync failed, Status: $syncreturn"
+        mailuser "$mailto" "$mailsubject" "$sync_output"
+        exit 1
+    fi
+  fi
+fi
+
+[ -f "$diff_output" ] && rm "$diff_output"
+[ -f "$sync_output" ] && rm "$sync_output"
+```
+
+#### Scrub
+```
+! /bin/bash
+
+function mailuser () {
+    mailto=$1
+    mailsubject=$2
+    mailbody=$3
+    echo $mailbody
+    /bin/cat <<EOF | /usr/sbin/ssmtp $mailto
+To: $mailto
+Subject: $mailsubject
+
+$([[ -f "$mailbody" ]] && tail -7 "$mailbody" || echo "$mailbody")
+
+EOF
+
+}
+
+
+mailto=user@user.org
+SNAPRAID_BIN=/usr/local/bin/snapraid
+output_dir=/tmp
+scrub_output="$output_dir/snapraid.scrub"
+status_output="$output_dir/snapraid.status"
+
+$SNAPRAID_BIN -p 20 scrub 2>&1 > "$scrub_output"
+scrubreturn=$?
+
+if [[ $scrubreturn -ne 0 ]]; then
+    mailsubject="Snapraid scrub failed, $scrubreturn"
+    mailuser "$mailto" "$mailsubject" "$scrub_output"
+    exit 1
+fi
+
+$SNAPRAID_BIN status 2>&1 > "$status_output"
+statusreturn=$?
+
+if [[ $statusreturn -ne 0 ]]; then
+    mailsubject="Snapraid status failed, $statusreturn"
+else
+    mailsubject="Snapraid status"
+fi
+
+mailuser "$mailto" "$mailsubject" "$status_output"
+
+[[ -f $scrub_output ]] && rm $scrub_output
+[[ -f $status_output ]] && rm $status_output
+```
+
+Put scripts in `/etc/cron.d/snapraid`
+```
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:/etc/cron.d:/usr/local/bin
+
+# Check for sync every day at 05:00 AM
+00 05 * * * root /etc/cron.d/snapraidsync.sh 2>&1 > /tmp/snapraid.log
+
+# Scrub 20% every Thursday
+22 06 * * 4 root /etc/cron.d/snapraidscrub.sh 2>&1 > /tmp/snapraidscrub.log
+```
+
+#### Install mailutils to receive emails
+```
+sudo apt-get install mailutils
+```
+
+
+
+## MHDDFS[mhddfs]
+```
+apt-get update
+apt-get install mhddfs
+mkdir <pool path>
+nano /etc/fstab
+mhddfs#<disk paths (, seperated)> <pool path> fuse allow_other,mlimit=40G 0 0
+nano /etc/rc.local
+mhddfs <disk paths (, seperated)> <pool path> -o allow_other -o mlimit=40G
+reboot
+```
+mlimit sets the minimum a drive can have as free space. A good idea is to keep all drives at least 5-10% free.
+
+## SSH
+```
+sudo apt-get openssh-server
+```
+
+## Smartmontools
+```
+sudo apt-get install smartmontools
+```
+
+## Plex Media Server
+### Install Plex services
+```
+sudo apt-get install avahi-daemon
+```
+### Install Plex Media Server
+Open sources `sudo nano /etc/apt/sources.list`
+
+Add following source
+```
+deb http://www.plexapp.com/repo lucid main
+```
+
+Now update and install
+```
+sudo apt-get update
+sudo apt-get install plexmediaserver
+```
+
+Set config
+```
+sudo nano /etc/default/plexmediaserver
+```
+> Remember to change username
+
+```
+sudo service plexmediaserver restart
+```
+
+## MySQL and apache
+```
+sudo apt-get install apache2
+sudo apt-get install php5
+sudo apt-get install libapache2-mod-php5
+sudo apt-get install mysql-server
+sudo apt-get install php5-mysql
+sudo /etc/init.d/apache2 restart
+```
+
+Web files can now be placed in `/var/www/`
+
+
+## Sabnzbd, Couchpotato, NzbDrone
+First make sure you have installed
+```
+sudo apt-get install python-software-properties
+```
+### Sabnzbd
+Add source
+```
+sudo add-apt-repository ppa:jcfp/ppa
+```
+> If this is not working use this instead
+> ``` 
+> echo "deb http://ppa.launchpad.net/jcfp/ppa/ubuntu $(lsb_release -c -s) main" | sudo tee -a /etc/apt/sources.list && sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:11371 --recv-keys 0x98703123E0F52B2BE16D586EF13930B14BB9F05F
+> ```
+
+```
+sudo apt-get update
+sudo apt-get install sabnzbdplus
+```
+> If mobile theme is wanted for sabnzbd, run the command
+> ```
+> sudo apt-get install sabnzbdplus-theme-mobile
+> ```
+
+#### Run on startup
+Change config
+```
+sudo nano /etc/default/sabnzbdplus
+```
+Remember to change username and change localhost to 0.0.0.0
+
+### Couchpotato
+```
+mkdir <couchpotato install path>
+cd <couchpotato install path>
+git clone https://github.com/RuudBurger/CouchPotatoServer.git .
+```
+
+#### Run on startup
+```
+sudo cp CouchPotatoServer/init/ubuntu /etc/init.d/couchpotato
+sudo nano /etc/init.d/couchpotato
+```
+Remember to change the path of couhpotato to <couchpotato install path> and change username
+
+Make file executable
+```
+sudo chmod +x /etc/init.d/couchpotato
+sudo update-rc.d couchpotato defaults
+```
+
+### NzbDrone
+Add source
+```
+sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys FDA5DFFC
+echo "deb http://apt.sonarr.tv/ master main" | sudo tee /etc/apt/sources.list.d/sonarr.list
+```
+
+```
+sudo apt-get update
+sudo apt-get install nzbdrone
+```
+
+#### Run on startup
+```
+sudo nano /etc/init/nzbdrone.conf
+```
+
+Paste following code ([Found here](https://github.com/Sonarr/Sonarr/wiki/Autostart-on-Linux))
+```
+#Set username for the process. Should probably be what you use for logging in
+setuid yourusername
+
+env DIR=/opt/NzbDrone
+#This is the install directory. If you installed using a deb package or the Sonarr Repository you do not need to change this
+
+setgid nogroup
+start on runlevel [2345]
+stop on runlevel [016]
+
+#respawn will break the built-in updating, if you wish to enable respawn you need to make sure updates are disabled within the UI
+#respawn
+
+exec mono --debug $DIR/NzbDrone.exe
+```
+
+Remember to change username
+
+Start NzbDrone now `sudo start nzbdrone`
+
+
+## Webmin
+Add source
+```
+deb http://download.webmin.com/download/repository sarge contrib
+deb http://webmin.mirror.somersettechsolutions.co.uk/repository sarge contrib
+```
+
+Fetch and install GPG key
+```
+cd /root
+wget http://www.webmin.com/jcameron-key.asc
+apt-key add jcameron-key.asc
+```
+
+Install
+```
+apt-get update
+apt-get install webmin
+```
+
+
+
+
+## NFS
+```
+sudo apt-get update
+sudo apt-get install nfs-kernel-server
+```
+### Configure NFS
+This can be done through webmin ([tutorial here](http://www.havetheknowhow.com/Configure-the-server/Configure-NFS.html)) or it can be done manually.
+
+```
+sudo mkdir -p /export/<name>
+sudo nano /etc/fstab
+<share folder>    /export/<name>    bind    bind    0
+sudo nano /etc/exports
+```
+Add the two lines
+```
+/export (insecure,no_subtree_check,rw,nohide,fsid=0)
+/export/<name> (insecure,no_subtree_check,rw,nohide)
+```
+Restart nfs kernel
+```
+sudo /etc/init.d/nfs-kernel-server restart
+```
