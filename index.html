@@ -494,10 +494,10 @@ EMAIL_SUBJECT_PREFIX="[`hostname`] SnapRAID - "
 TMP_OUTPUT="/tmp/snapRAID.out"
 SYNC_WARN_FILE="/tmp/snapRAID.warnCount"
 <span class="c">
-# auto determine names of content and parity files
+# auto determine names of content and parity files</span>
 CONTENT_FILE=`cat /etc/snapraid.conf | grep snapraid.content | head -n 1 | cut -d " " -f2`
 PARITY_FILE=`cat /etc/snapraid.conf | grep snapraid.parity | head -n 1 | cut -d " " -f2`
-
+<span class="c">
 # redirect all stdout to log file (leave stderr alone thou)
 exec >> $LOG_FILE
 
